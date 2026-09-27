@@ -207,13 +207,13 @@ async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   if (!response.ok) return null
 
   const html = await response.text()
-  const match = html.match(/<pre[^>]*>([\\s\\S]*?)<\\/pre>/i)
+  const match = html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)
   if (!match) return null
 
   try {
     const raw = match[1]
       .replace(/<code[^>]*>/gi, '')
-      .replace(/<\\/code>/gi, '')
+      .replace(/<\/code>/gi, '')
       .trim()
       .replace(/^\`|\`$/g, '')
       .trim()
