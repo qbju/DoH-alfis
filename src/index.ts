@@ -15,6 +15,7 @@ type AlfisRecord = {
   priority?: number
   weight?: number
   target?: string
+  host?: string
 }
 
 type AlfisData = {
@@ -225,9 +226,9 @@ function toDnsAnswer(record: AlfisRecord, qname: string): any {
     case 'AAAA':
       return { name: qname, type: record.type, class: 'IN', ttl, data: record.addr }
     case 'CNAME':
-      return { name: qname, type: 'CNAME', class: 'IN', ttl, data: record.addr ?? record.value }
+      return { name: qname, type: 'CNAME', class: 'IN', ttl, data: record.addr ?? record.value ?? record.host }
     case 'NS':
-      return { name: qname, type: 'NS', class: 'IN', ttl, data: record.addr ?? record.value }
+      return { name: qname, type: 'NS', class: 'IN', ttl, data: record.addr ?? record.value ?? record.host }
     case 'PTR':
       return { name: qname, type: 'PTR', class: 'IN', ttl, data: record.addr ?? record.value }
     case 'MX':
@@ -237,7 +238,7 @@ function toDnsAnswer(record: AlfisRecord, qname: string): any {
         class: 'IN',
         ttl,
         preference: record.priority ?? 10,
-        exchange: record.addr ?? record.value,
+        exchange: record.addr ?? record.value ?? record.host,
       }
     case 'TXT':
       return { name: qname, type: 'TXT', class: 'IN', ttl, data: record.value ?? record.addr ?? '' }
@@ -251,7 +252,7 @@ function toDnsAnswer(record: AlfisRecord, qname: string): any {
           priority: record.priority ?? 0,
           weight: record.weight ?? 0,
           port: record.port ?? 0,
-          target: record.target ?? record.addr ?? record.value ?? '.',
+          target: record.target ?? record.addr ?? record.value ?? record.host ?? '.',
         },
       }
     default:
