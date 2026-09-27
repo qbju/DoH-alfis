@@ -2,10 +2,5 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "doh-alfis",
   "main": "src/index.ts",
-  "compatibility_date": "2026-09-25",
-  "kv_namespaces": [
-    {
-      "binding": "ALFIS_KV"
-    }
-  ]
+  "compatibility_date": "2026-09-25"
 }
