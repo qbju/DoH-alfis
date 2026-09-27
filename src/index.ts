@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import * as dns from '@dnsquery/dns-packet'
-import { isBlockedDomain, listBlockedDomains, normalizeBlockedDomain, BLOCKLIST_PREFIX } from './blocklist'
+import { BLOCKED_DOMAINS, isBlockedDomain, listBlockedDomains, normalizeBlockedDomain, BLOCKLIST_PREFIX } from './blocklist'
 
 type Bindings = {
   ALFIS_KV?: KVNamespace
@@ -42,7 +42,15 @@ app.get('/api/blocklist', async (c) => {
     return c.json({ error: 'unauthorized' }, 401)
   }
   if (!c.env.ALFIS_KV) return c.json({ error: 'ALFIS_KV is not configured' }, 503)
-  return c.json({ domains: await listBlockedDomains(c.env.ALFIS_KV) })
+
+  const domains = await listBlockedDomains(c.env.ALFIS_KV)
+  return c.json({
+    domains: domains.map((domain) => ({
+      domain,
+      editable: !BLOCKED_DOMAINS.has(domain),
+      source: BLOCKED_DOMAINS.has(domain) ? 'config' : 'kv',
+    })),
+  })
 })
 
 app.post('/api/blocklist', async (c) => {
@@ -59,6 +67,29 @@ app.post('/api/blocklist', async (c) => {
   return c.json({ ok: true, domain })
 })
 
+app.put('/api/blocklist', async (c) => {
+  if (!isAdminAuthorized(c.req.header('authorization'), c.env.ADMIN_TOKEN)) {
+    return c.json({ error: 'unauthorized' }, 401)
+  }
+  if (!c.env.ALFIS_KV) return c.json({ error: 'ALFIS_KV is not configured' }, 503)
+
+  const body = await c.req.json<{ from?: string; domain?: string }>().catch(() => null)
+  const from = body?.from ? normalizeBlockedDomain(body.from) : ''
+  const domain = body?.domain ? normalizeBlockedDomain(body.domain) : ''
+
+  if (!isValidDomain(from) || !isValidDomain(domain)) {
+    return c.json({ error: 'invalid domain' }, 400)
+  }
+  if (BLOCKED_DOMAINS.has(from)) {
+    return c.json({ error: 'config domain cannot be edited' }, 400)
+  }
+  if (from === domain) return c.json({ ok: true, domain })
+
+  await c.env.ALFIS_KV.delete(BLOCKLIST_PREFIX + from)
+  await c.env.ALFIS_KV.put(BLOCKLIST_PREFIX + domain, '1')
+  return c.json({ ok: true, domain })
+})
+
 app.delete('/api/blocklist', async (c) => {
   if (!isAdminAuthorized(c.req.header('authorization'), c.env.ADMIN_TOKEN)) {
     return c.json({ error: 'unauthorized' }, 401)
@@ -68,6 +99,9 @@ app.delete('/api/blocklist', async (c) => {
   const body = await c.req.json<{ domain?: string }>().catch(() => null)
   const domain = body?.domain ? normalizeBlockedDomain(body.domain) : ''
   if (!isValidDomain(domain)) return c.json({ error: 'invalid domain' }, 400)
+  if (BLOCKED_DOMAINS.has(domain)) {
+    return c.json({ error: 'config domain cannot be deleted' }, 400)
+  }
 
   await c.env.ALFIS_KV.delete(BLOCKLIST_PREFIX + domain)
   return c.json({ ok: true, domain })
@@ -108,8 +142,6 @@ async function resolveDoH(env: Bindings, packet: Uint8Array): Promise<Response> 
   const tld = qname.split('.').at(-1) ?? ''
   console.log('[DoH] query', { qname, qtype, tld, isAlfis: ALFIS_ZONES.has(tld) })
 
-  // Apply the blocklist before either Alfis or upstream resolution.
-  // This makes the policy consistent for both Alfis and normal DNS names.
   if (await isBlockedDomain(qname, env.ALFIS_KV)) {
     console.log('[DoH] blocked', { qname, qtype })
     return dnsResponse(makeErrorResponse(query, 3))
@@ -165,13 +197,12 @@ async function resolveNormalQuery(packet: Uint8Array): Promise<Response> {
   }
   return new Response(null, { status: 502 })
 }
+
 async function resolveFromAlfis(qname: string, qtype: string): Promise<{ data: AlfisData; ownerDomain: string } | null> {
   const labels = qname.split('.').filter(Boolean)
   console.log('[Alfis] labels', labels)
   if (labels.length < 2) return null
 
-  // foo.bar.send.ygg -> foo.bar.send.ygg -> bar.send.ygg -> send.ygg
-  // Try the exact domain first, then walk up through its parents.
   for (let i = 0; i <= labels.length - 2; i++) {
     const candidate = labels.slice(i).join('.')
     const candidateTld = candidate.split('.').at(-1) ?? ''
@@ -193,9 +224,6 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<{ data: A
 async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   const zone = domain.split('.').at(-1)!
   const hash = await doubleSha256Hex(domain)
-
-  // Alfis Viewer lookup uses literal angle brackets around the hash:
-  // <HASH>.ygg
   const lookup = `<${hash}>.${zone}`
   const url = `${VIEWER}${encodeURIComponent(lookup)}`
   console.log('[Viewer] request', { domain, zone, hash, url })
@@ -224,7 +252,6 @@ async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   } catch {
     return null
   }
-
 }
 
 function selectRecords(
@@ -266,9 +293,6 @@ async function makeAlfisResponse(
   const records = selectRecords(data.records, qname, ownerDomain, qtype, true)
   const answers = records.map((record) => toDnsAnswer(record, qname))
 
-  // A/AAAA queries that hit an Alfis CNAME are resolved through 1.1.1.1
-  // and returned together with the original CNAME, as required by normal
-  // DNS CNAME processing.
   if ((qtype === 'A' || qtype === 'AAAA') && records.some((r) => r.type === 'CNAME')) {
     const cname = records.find((r) => r.type === 'CNAME')!
     const target = normalizeName(cname.addr ?? cname.value ?? cname.host ?? '')
@@ -377,13 +401,6 @@ function toDnsAnswer(record: AlfisRecord, qname: string): any {
   }
 }
 
-function findOwnerDomain(qname: string, zone: string): string {
-  const labels = qname.split('.')
-  const zoneIndex = labels.lastIndexOf(zone)
-  if (zoneIndex <= 0) return qname
-  return labels.slice(zoneIndex - 1).join('.')
-}
-
 function minTtl(records: AlfisRecord[]): number {
   return records.reduce((min, r) => Math.min(min, r.ttl ?? 300), 3600)
 }
@@ -466,58 +483,172 @@ const ADMIN_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DoH Alfis - Blocklist</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 16px}
-input,button{font:inherit;padding:10px} input{width:70%} button{cursor:pointer}
-li{display:flex;justify-content:space-between;gap:12px;margin:8px 0}
-#login{margin-bottom:24px}.muted{color:#666}
+:root{color-scheme:dark light}
+body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px}
+input,button{font:inherit;padding:10px} input{box-sizing:border-box}
+button{cursor:pointer}
+#token{width:min(100%,520px)}
+#domain{width:min(100%,520px)}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+.list{list-style:none;padding:0;margin:16px 0}
+.item{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #ddd}
+.actions{display:flex;gap:6px}
+code{overflow-wrap:anywhere}
+.muted{color:#666}
+#status{min-height:1.4em}
 </style>
 </head>
 <body>
 <h1>Blocklist</h1>
-<p class="muted">ドメインを追加すると、その配下のサブドメインもNXDOMAINになります。</p>
+<p class="muted">登録されたドメインと、配下でブロックされる範囲を管理します。</p>
+
 <div id="login">
-<input id="token" type="password" placeholder="ADMIN_TOKEN">
+<input id="token" type="password" placeholder="ADMIN_TOKEN" autocomplete="current-password">
 <button onclick="load()">接続</button>
 </div>
-<form id="add" style="display:none" onsubmit="add(event)">
-<input id="domain" placeholder="example.com" autocomplete="off">
-<button>ブロック</button>
+
+<div id="panel" style="display:none">
+<form id="add" onsubmit="add(event)">
+<div class="toolbar">
+<input id="domain" placeholder="example.com" autocomplete="off" required>
+<button type="submit">追加</button>
+<button type="button" onclick="refresh()">再読み込み</button>
+</div>
 </form>
-<ul id="list"></ul>
+<p id="status" class="muted"></p>
+<ul id="list" class="list"></ul>
+</div>
+
 <script>
 let token='';
+
 async function api(path, options={}){
-  options.headers=Object.assign({'Authorization':'Bearer '+token,'Content-Type':'application/json'},options.headers||{});
+  options.headers=Object.assign({
+    'Authorization':'Bearer '+token,
+    'Content-Type':'application/json'
+  },options.headers||{});
   const r=await fetch(path,options);
   if(!r.ok) throw new Error(await r.text());
   return r.json();
 }
+
 async function load(){
   token=document.getElementById('token').value;
   try{
     await refresh();
-    document.getElementById('add').style.display='block';
-  }catch(e){alert('認証失敗 / '+e.message)}
+    document.getElementById('panel').style.display='block';
+    setStatus('接続しました');
+  }catch(e){
+    setStatus('接続失敗: '+e.message);
+  }
 }
+
 async function refresh(){
   const data=await api('/api/blocklist');
-  document.getElementById('list').innerHTML=data.domains.map(d =>
-    '<li><code>'+escapeHtml(d)+'</code><button onclick="removeDomain(\\''+escapeJs(d)+'\\')">削除</button></li>'
-  ).join('');
+  render(data.domains);
 }
+
+function render(domains){
+  const list=document.getElementById('list');
+  list.replaceChildren();
+
+  if(!domains.length){
+    const empty=document.createElement('li');
+    empty.className='muted';
+    empty.textContent='現在ブロックされているドメインはありません。';
+    list.appendChild(empty);
+    return;
+  }
+
+  for(const item of domains){
+    const li=document.createElement('li');
+    li.className='item';
+
+    const left=document.createElement('div');
+    const code=document.createElement('code');
+    code.textContent=item.domain;
+    left.appendChild(code);
+
+    const meta=document.createElement('span');
+    meta.className='muted';
+    meta.textContent=item.source==='config'?' 設定ファイル':' KV';
+    left.appendChild(meta);
+
+    const actions=document.createElement('div');
+    actions.className='actions';
+
+    if(item.editable){
+      const edit=document.createElement('button');
+      edit.textContent='編集';
+      edit.onclick=()=>editDomain(item.domain);
+      actions.appendChild(edit);
+
+      const remove=document.createElement('button');
+      remove.textContent='削除';
+      remove.onclick=()=>removeDomain(item.domain);
+      actions.appendChild(remove);
+    }else{
+      const locked=document.createElement('span');
+      locked.className='muted';
+      locked.textContent='設定ファイルで管理';
+      actions.appendChild(locked);
+    }
+
+    li.append(left,actions);
+    list.appendChild(li);
+  }
+}
+
 async function add(e){
   e.preventDefault();
   const domain=document.getElementById('domain').value.trim();
-  try{await api('/api/blocklist',{method:'POST',body:JSON.stringify({domain})});document.getElementById('domain').value='';await refresh()}
-  catch(e){alert(e.message)}
+  try{
+    const result=await api('/api/blocklist',{
+      method:'POST',
+      body:JSON.stringify({domain})
+    });
+    document.getElementById('domain').value='';
+    await refresh();
+    setStatus(result.domain+' を追加しました');
+  }catch(e){
+    setStatus('追加失敗: '+e.message);
+  }
 }
+
+async function editDomain(oldDomain){
+  const newDomain=prompt('変更後のドメイン',oldDomain);
+  if(newDomain===null || !newDomain.trim() || newDomain.trim()===oldDomain) return;
+
+  try{
+    const result=await api('/api/blocklist',{
+      method:'PUT',
+      body:JSON.stringify({from:oldDomain,domain:newDomain.trim()})
+    });
+    await refresh();
+    setStatus(oldDomain+' → '+result.domain+' に変更しました');
+  }catch(e){
+    setStatus('編集失敗: '+e.message);
+  }
+}
+
 async function removeDomain(domain){
-  if(!confirm(domain+' をブロック解除？')) return;
-  try{await api('/api/blocklist',{method:'DELETE',body:JSON.stringify({domain})});await refresh()}
-  catch(e){alert(e.message)}
+  if(!confirm(domain+' をブロック解除しますか？')) return;
+
+  try{
+    await api('/api/blocklist',{
+      method:'DELETE',
+      body:JSON.stringify({domain})
+    });
+    await refresh();
+    setStatus(domain+' を削除しました');
+  }catch(e){
+    setStatus('削除失敗: '+e.message);
+  }
 }
-function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function escapeJs(s){return s.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,"\\\\'")}
+
+function setStatus(message){
+  document.getElementById('status').textContent=message;
+}
 </script>
 </body>
 </html>`
