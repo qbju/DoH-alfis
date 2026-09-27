@@ -73,7 +73,7 @@ async function resolveDoH(env: Bindings, packet: Uint8Array): Promise<Response> 
 
 async function resolveAlfisQuery(env: Bindings, query: any, qname: string, qtype: string): Promise<Response> {
   console.log('[Alfis] start', { qname, qtype })
-  const cacheKey = 'alfis:v1:' + qname + ':' + qtype
+  const cacheKey = 'alfis:v2:' + qname + ':' + qtype
   const cached = env.ALFIS_KV ? await env.ALFIS_KV.get(cacheKey, 'arrayBuffer') : null
   console.log('[Alfis] KV', env.ALFIS_KV ? (cached ? 'HIT' : 'MISS') : 'UNBOUND', cacheKey)
   if (cached) return dnsResponse(new Uint8Array(cached))
@@ -81,7 +81,8 @@ async function resolveAlfisQuery(env: Bindings, query: any, qname: string, qtype
     const alfis = await resolveFromAlfis(qname, qtype)
     console.log('[Alfis] resolve result', alfis)
     if (!alfis) return dnsResponse(makeErrorResponse(query, 3))
-    const response = makeAlfisResponse(query, qname, qtype, alfis)
+
+    const response = await makeAlfisResponse(query, qname, qtype, alfis.data, alfis.ownerDomain)
     const encoded = dns.encode(response)
     if (env.ALFIS_KV) {
       await env.ALFIS_KV.put(cacheKey, encoded.buffer as ArrayBuffer, {
@@ -116,7 +117,7 @@ async function resolveNormalQuery(packet: Uint8Array): Promise<Response> {
   }
   return new Response(null, { status: 502 })
 }
-async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData | null> {
+async function resolveFromAlfis(qname: string, qtype: string): Promise<{ data: AlfisData; ownerDomain: string } | null> {
   const labels = qname.split('.').filter(Boolean)
   console.log('[Alfis] labels', labels)
   if (labels.length < 2) return null
@@ -133,10 +134,9 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
 
     if (!data) continue
 
-    const selected = selectRecords(data.records, qname, candidate, qtype)
+    const selected = selectRecords(data.records, qname, candidate, qtype, true)
     console.log('[Alfis] selected', { candidate, qname, qtype, selected })
-    if (selected.length > 0) return data
-
+    if (selected.length > 0) return { data, ownerDomain: candidate }
   }
 
   return null
@@ -184,6 +184,7 @@ function selectRecords(
   qname: string,
   ownerDomain: string,
   qtype: string,
+  allowCnameForAddressQuery = false,
 ): AlfisRecord[] {
   const relative =
     qname === ownerDomain
@@ -197,14 +198,36 @@ function selectRecords(
 
   return records.filter((record) => {
     const owner = normalizeName(record.domain || '@')
-    return (owner === '@' || owner === relative) && record.type === qtype
+    const typeMatches =
+      record.type === qtype ||
+      (allowCnameForAddressQuery &&
+        (qtype === 'A' || qtype === 'AAAA') &&
+        record.type === 'CNAME')
+    return (owner === '@' || owner === relative) && typeMatches
   })
 }
 
-function makeAlfisResponse(query: any, qname: string, qtype: string, data: AlfisData): any {
-  const ownerDomain = findOwnerDomain(qname, data.zone)
-  const records = selectRecords(data.records, qname, ownerDomain, qtype)
+async function makeAlfisResponse(
+  query: any,
+  qname: string,
+  qtype: string,
+  data: AlfisData,
+  ownerDomain: string,
+): Promise<any> {
+  const records = selectRecords(data.records, qname, ownerDomain, qtype, true)
   const answers = records.map((record) => toDnsAnswer(record, qname))
+
+  // A/AAAA queries that hit an Alfis CNAME are resolved through 1.1.1.1
+  // and returned together with the original CNAME, as required by normal
+  // DNS CNAME processing.
+  if ((qtype === 'A' || qtype === 'AAAA') && records.some((r) => r.type === 'CNAME')) {
+    const cname = records.find((r) => r.type === 'CNAME')!
+    const target = normalizeName(cname.addr ?? cname.value ?? cname.host ?? '')
+    if (!target) throw new Error('Alfis CNAME has no target')
+
+    const targetAnswers = await resolveCnameTarget(query, target, qtype, [qname])
+    answers.push(...targetAnswers)
+  }
 
   return {
     type: 'response',
@@ -216,6 +239,51 @@ function makeAlfisResponse(query: any, qname: string, qtype: string, data: Alfis
     additionals: [],
     rcode: 0,
   }
+}
+
+async function resolveCnameTarget(
+  originalQuery: any,
+  target: string,
+  qtype: string,
+  chain: string[],
+): Promise<any[]> {
+  if (chain.includes(target)) throw new Error('CNAME loop detected')
+  if (chain.length >= 16) throw new Error('CNAME chain too long')
+
+  const targetQuery = {
+    type: 'query',
+    id: originalQuery.id,
+    flags: originalQuery.flags ?? 0,
+    questions: [{ name: target, type: qtype, class: 'IN' }],
+    answers: [],
+    authorities: [],
+    additionals: [],
+  }
+
+  const upstream = await queryCloudflare(dns.encode(targetQuery))
+  if (!upstream.ok) {
+    throw new Error(`Cloudflare DoH returned HTTP ${upstream.status}`)
+  }
+
+  const upstreamPacket = new Uint8Array(await upstream.arrayBuffer())
+  const upstreamResponse = dns.decode(upstreamPacket)
+  const upstreamAnswers = upstreamResponse.answers ?? []
+
+  const cnameAnswers = upstreamAnswers.filter((answer: any) => answer.type === 'CNAME')
+  const addressAnswers = upstreamAnswers.filter(
+    (answer: any) => answer.type === qtype && answer.class === 'IN',
+  )
+
+  if (addressAnswers.length > 0) {
+    return [...cnameAnswers, ...addressAnswers]
+  }
+
+  const nextCname = cnameAnswers.at(-1)
+  if (!nextCname?.data) return []
+
+  const nextTarget = normalizeName(String(nextCname.data))
+  const chained = await resolveCnameTarget(originalQuery, nextTarget, qtype, [...chain, target])
+  return [...cnameAnswers, ...chained]
 }
 
 function toDnsAnswer(record: AlfisRecord, qname: string): any {
