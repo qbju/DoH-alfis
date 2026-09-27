@@ -65,16 +65,20 @@ async function resolveDoH(env: Bindings, packet: Uint8Array): Promise<Response> 
   const qname = normalizeName(question.name)
   const qtype = question.type
   const tld = qname.split('.').at(-1) ?? ''
+  console.log('[DoH] query', { qname, qtype, tld, isAlfis: ALFIS_ZONES.has(tld) })
   if (ALFIS_ZONES.has(tld)) return resolveAlfisQuery(env, query, qname, qtype)
   return resolveNormalQuery(packet)
 }
 
 async function resolveAlfisQuery(env: Bindings, query: any, qname: string, qtype: string): Promise<Response> {
+  console.log('[Alfis] start', { qname, qtype })
   const cacheKey = 'alfis:v1:' + qname + ':' + qtype
   const cached = await env.ALFIS_KV.get(cacheKey, 'arrayBuffer')
+  console.log('[Alfis] KV', cached ? 'HIT' : 'MISS', cacheKey)
   if (cached) return dnsResponse(new Uint8Array(cached))
   try {
     const alfis = await resolveFromAlfis(qname, qtype)
+    console.log('[Alfis] resolve result', alfis)
     if (!alfis) return dnsResponse(makeErrorResponse(query, 3))
     const response = makeAlfisResponse(query, qname, qtype, alfis)
     const encoded = dns.encode(response)
@@ -109,6 +113,7 @@ async function resolveNormalQuery(packet: Uint8Array): Promise<Response> {
 }
 async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData | null> {
   const labels = qname.split('.').filter(Boolean)
+  console.log('[Alfis] labels', labels)
   if (labels.length < 2) return null
 
   // foo.bar.send.ygg -> foo.bar.send.ygg -> bar.send.ygg -> send.ygg
@@ -116,14 +121,16 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
   for (let i = 0; i <= labels.length - 2; i++) {
     const candidate = labels.slice(i).join('.')
     const candidateTld = candidate.split('.').at(-1) ?? ''
+    console.log('[Alfis] candidate', { candidate, candidateTld })
     if (!ALFIS_ZONES.has(candidateTld)) continue
     const data = await fetchAlfis(candidate)
+    console.log('[Alfis] viewer data', data)
 
     if (!data) continue
 
-    if (selectRecords(data.records, qname, candidate, qtype).length > 0) {
-      return data
-    }
+    const selected = selectRecords(data.records, qname, candidate, qtype)
+    console.log('[Alfis] selected', { candidate, qname, qtype, selected })
+    if (selected.length > 0) return data
 
   }
 
@@ -137,10 +144,13 @@ async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   // Alfis Viewer lookup uses literal angle brackets around the hash:
   // <HASH>.ygg
   const lookup = `<${hash}>.${zone}`
+  const url = `${VIEWER}${encodeURIComponent(lookup)}`
+  console.log('[Viewer] request', { domain, zone, hash, url })
   const response = await fetch(`${VIEWER}${encodeURIComponent(lookup)}`, {
     headers: { accept: 'text/html' },
   })
 
+  console.log('[Viewer] HTTP', response.status)
   if (!response.ok) return null
 
   const html = await response.text()
@@ -155,6 +165,7 @@ async function fetchAlfis(domain: string): Promise<AlfisData | null> {
       .replace(/^`|`$/g, '')
       .trim()
     const data = JSON.parse(decodeHtml(raw)) as AlfisData
+    console.log('[Viewer] parsed', { zone: data.zone, recordCount: data.records?.length, records: data.records })
     if (!data.zone || !Array.isArray(data.records)) return null
     return data
   } catch {
@@ -176,6 +187,7 @@ function selectRecords(
         ? qname.slice(0, -(ownerDomain.length + 1))
         : null
 
+  console.log('[Select] input', { qname, ownerDomain, qtype, relative, records })
   if (relative === null) return []
 
   return records.filter((record) => {
