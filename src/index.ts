@@ -28,6 +28,8 @@ const DOH_CONTENT_TYPE = 'application/dns-message'
 const VIEWER = 'https://viewer.alfis.name/domain/'
 const DNS1111 = 'https://cloudflare-dns.com/dns-query'
 
+const ALFIS_ZONES = new Set(['anon','btn','conf','index','merch','mirror','mob','screen','srv','ygg'])
+
 app.get('/', (c) => c.text('DoH Alfis PoC'))
 
 app.get('/dns-query', async (c) => {
@@ -59,56 +61,41 @@ app.post('/dns-query', async (c) => {
 async function resolveDoH(env: Bindings, packet: Uint8Array): Promise<Response> {
   const query = dns.decode(packet)
   const question = query.questions?.[0]
-
-  if (!question?.name || question.class !== 'IN') {
-    return dnsResponse(makeErrorResponse(query, 1))
-  }
-
+  if (!question?.name || question.class !== 'IN') return dnsResponse(makeErrorResponse(query, 1))
   const qname = normalizeName(question.name)
   const qtype = question.type
-  const cacheKey = `v1:${qname}:${qtype}`
+  const tld = qname.split('.').at(-1) ?? ''
+  if (ALFIS_ZONES.has(tld)) return resolveAlfisQuery(env, query, qname, qtype)
+  return resolveNormalQuery(packet)
+}
 
-  // Alfis is the default resolver. KV only caches Alfis-derived answers.
+async function resolveAlfisQuery(env: Bindings, query: any, qname: string, qtype: string): Promise<Response> {
+  const cacheKey = 'alfis:v1:' + qname + ':' + qtype
   const cached = await env.ALFIS_KV.get(cacheKey, 'arrayBuffer')
   if (cached) return dnsResponse(new Uint8Array(cached))
-
-  const alfis = await resolveFromAlfis(qname, qtype)
-  if (alfis) {
+  try {
+    const alfis = await resolveFromAlfis(qname, qtype)
+    if (!alfis) return dnsResponse(makeErrorResponse(query, 3))
     const response = makeAlfisResponse(query, qname, qtype, alfis)
     const encoded = dns.encode(response)
-
-    await env.ALFIS_KV.put(cacheKey, encoded.buffer as ArrayBuffer, {
-      expirationTtl: Math.max(30, minTtl(alfis.records)),
-    })
-
+    await env.ALFIS_KV.put(cacheKey, encoded.buffer as ArrayBuffer, { expirationTtl: Math.max(30, minTtl(alfis.records)) })
     return dnsResponse(encoded)
+  } catch (err) {
+    console.error('Alfis lookup failed:', err)
+    return dnsResponse(makeErrorResponse(query, 2))
   }
+}
 
-  // Ordinary DNS is only the fallback when Alfis has no answer.
+async function resolveNormalQuery(packet: Uint8Array): Promise<Response> {
   try {
     const normal = await queryCloudflare(packet)
-    if (normal.ok) {
-      const normalBytes = new Uint8Array(await normal.arrayBuffer())
-      return dnsResponse(normalBytes)
-    }
+    if (normal.ok) return dnsResponse(new Uint8Array(await normal.arrayBuffer()))
+    console.error('Cloudflare DoH returned HTTP', normal.status)
   } catch (err) {
-    console.error('Cloudflare DoH fallback failed:', err)
+    console.error('Cloudflare DoH query failed:', err)
   }
-
-  return dnsResponse(makeErrorResponse(query, 3))
+  return new Response(null, { status: 502 })
 }
-
-async function queryCloudflare(packet: Uint8Array): Promise<Response> {
-  return fetch(DNS1111, {
-    method: 'POST',
-    headers: {
-      'content-type': DOH_CONTENT_TYPE,
-      accept: DOH_CONTENT_TYPE,
-    },
-    body: packet,
-  })
-}
-
 async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData | null> {
   const labels = qname.split('.').filter(Boolean)
   if (labels.length < 2) return null
@@ -117,6 +104,8 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
   // Try the exact domain first, then walk up through its parents.
   for (let i = 0; i <= labels.length - 2; i++) {
     const candidate = labels.slice(i).join('.')
+    const candidateTld = candidate.split('.').at(-1) ?? ''
+    if (!ALFIS_ZONES.has(candidateTld)) continue
     const data = await fetchAlfis(candidate)
 
     if (!data) continue
