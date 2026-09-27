@@ -86,6 +86,17 @@ async function resolveAlfisQuery(env: Bindings, query: any, qname: string, qtype
   }
 }
 
+async function queryCloudflare(packet: Uint8Array): Promise<Response> {
+  return fetch(DNS1111, {
+    method: 'POST',
+    headers: {
+      'content-type': DOH_CONTENT_TYPE,
+      'accept': DOH_CONTENT_TYPE,
+    },
+    body: packet,
+  })
+}
+
 async function resolveNormalQuery(packet: Uint8Array): Promise<Response> {
   try {
     const normal = await queryCloudflare(packet)
