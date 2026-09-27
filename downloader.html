@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DoH Profile Generator</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    max-width: 600px;
+    margin: 40px auto;
+    padding: 0 20px;
+  }
+  input, button {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 14px;
+    margin-top: 10px;
+    font-size: 16px;
+  }
+  button { cursor: pointer; }
+  label { display:block; margin-top:18px; }
+  #status { margin-top:15px; }
+</style>
+</head>
+<body>
+<h1>DoH Profile Generator</h1>
+
+<label>
+  DoH Server URL
+  <input id="url" type="url" placeholder="https://example.com/dns-query"
+         autocomplete="off" spellcheck="false">
+</label>
+
+<label>
+  Profile Name
+  <input id="name" type="text" placeholder="My DoH">
+</label>
+
+<button id="generate">構成プロファイルを生成</button>
+<p id="status"></p>
+
+<script>
+function uuid() {
+  return crypto.randomUUID().toUpperCase();
+}
+
+function escapeXML(str) {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+document.getElementById("generate").addEventListener("click", () => {
+  const url = document.getElementById("url").value.trim();
+  const name = document.getElementById("name").value.trim() || "Custom DoH";
+
+  if (!url) {
+    alert("DoH URLを入力してください");
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    alert("URLが正しくありません");
+    return;
+  }
+
+  if (parsed.protocol !== "https:") {
+    alert("DoHはHTTPS URLを指定してください");
+    return;
+  }
+
+  const profileUUID = uuid();
+  const payloadUUID = uuid();
+
+  const safeURL = escapeXML(url);
+  const safeName = escapeXML(name);
+
+  const profile = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>DNSSettings</key>
+      <dict>
+        <key>DNSProtocol</key>
+        <string>HTTPS</string>
+        <key>ServerURL</key>
+        <string>${safeURL}</string>
+      </dict>
+      <key>PayloadDescription</key>
+      <string>DNS over HTTPS</string>
+      <key>PayloadDisplayName</key>
+      <string>${safeName}</string>
+      <key>PayloadIdentifier</key>
+      <string>com.custom.doh.${payloadUUID}</string>
+      <key>PayloadType</key>
+      <string>com.apple.dnsSettings.managed</string>
+      <key>PayloadUUID</key>
+      <string>${payloadUUID}</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>DNS over HTTPS configuration</string>
+  <key>PayloadDisplayName</key>
+  <string>${safeName}</string>
+  <key>PayloadIdentifier</key>
+  <string>com.custom.doh.profile.${profileUUID}</string>
+  <key>PayloadOrganization</key>
+  <string>Custom DoH</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>${profileUUID}</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>`;
+
+  const blob = new Blob([profile], {
+    type: "application/x-apple-aspen-config"
+  });
+
+  const downloadURL = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = downloadURL;
+  a.download = "custom-doh.mobileconfig";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  setTimeout(() => URL.revokeObjectURL(downloadURL), 1000);
+  document.getElementById("status").textContent =
+    "構成プロファイルを生成しました。";
+});
+</script>
+</body>
+</html>
