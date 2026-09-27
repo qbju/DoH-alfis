@@ -203,7 +203,8 @@ function selectRecords(
       (allowCnameForAddressQuery &&
         (qtype === 'A' || qtype === 'AAAA') &&
         record.type === 'CNAME')
-    return (owner === '@' || owner === relative) && typeMatches
+    const ownerMatches = owner === '@' ? qname === ownerDomain : owner === relative
+    return ownerMatches && typeMatches
   })
 }
 
