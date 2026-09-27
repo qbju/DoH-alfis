@@ -118,9 +118,9 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
   const labels = qname.split('.').filter(Boolean)
   if (labels.length < 2) return null
 
-  // foo.bar.send.ygg -> bar.send.ygg -> send.ygg
-  // A subdomain is not looked up as its own Alfis entry.
-  for (let i = 1; i <= labels.length - 2; i++) {
+  // foo.bar.send.ygg -> foo.bar.send.ygg -> bar.send.ygg -> send.ygg
+  // Try the exact domain first, then walk up through its parents.
+  for (let i = 0; i <= labels.length - 2; i++) {
     const candidate = labels.slice(i).join('.')
     const data = await fetchAlfis(candidate)
 
@@ -139,9 +139,11 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
 
 async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   const zone = domain.split('.').at(-1)!
+  // Alfis hashes the raw domain string: SHA256(SHA256(domain)).
+  // Angle brackets shown in documentation are placeholders, not literal bytes.
   const hash = await doubleSha256Hex(domain)
 
-  // send.ygg and hash.ygg both use this same hash-form Viewer lookup.
+  // The Viewer lookup uses the resulting hexadecimal hash plus the zone.
   const response = await fetch(`${VIEWER}${hash}.${zone}`, {
     headers: { accept: 'text/html' },
   })
