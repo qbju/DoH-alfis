@@ -119,7 +119,8 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
   if (labels.length < 2) return null
 
   // foo.bar.send.ygg -> bar.send.ygg -> send.ygg
-  for (let i = 0; i <= labels.length - 2; i++) {
+  // A subdomain is not looked up as its own Alfis entry.
+  for (let i = 1; i <= labels.length - 2; i++) {
     const candidate = labels.slice(i).join('.')
     const data = await fetchAlfis(candidate)
 
