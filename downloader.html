@@ -28,10 +28,22 @@
 <h1>DoH Profile Generator</h1>
 
 <label>
-  DoH Server URL
-  <input id="url" type="url" placeholder="https://example.com/dns-query"
+  プライマリ DoH Server URL
+  <input id="primary" type="url" placeholder="https://example.com/dns-query"
          autocomplete="off" spellcheck="false">
 </label>
+
+<label>
+  セカンダリ DoH Server URL
+  <input id="secondary" type="url" placeholder="https://secondary.example.com/dns-query"
+         autocomplete="off" spellcheck="false">
+</label>
+
+<div class="note">
+  iOSのDNSSettings payloadではDoHのServerURLは1つです。
+  このジェネレーターではプライマリ／セカンダリを同じ.mobileconfig内の2つのDNS payloadとして設定します。
+  ただし、iOSがこれを優先順位付きの一次／二次フェイルオーバーとして扱う仕様ではありません。
+</div>
 
 <label>
   Profile Name
@@ -56,101 +68,100 @@ function escapeXML(str) {
 }
 
 document.getElementById("generate").addEventListener("click", () => {
-  const url = document.getElementById("url").value.trim();
+  const primary = document.getElementById("primary").value.trim();
+  const secondary = document.getElementById("secondary").value.trim();
   const name = document.getElementById("name").value.trim() || "Custom DoH";
 
-  if (!url) {
-    alert("DoH URLを入力してください");
-    return;
+  function validateURL(value, label) {
+    if (!value) throw new Error(label + "を入力してください");
+    let parsed;
+    try { parsed = new URL(value); }
+    catch { throw new Error(label + "のURLが正しくありません"); }
+    if (parsed.protocol !== "https:") throw new Error(label + "はHTTPS URLを指定してください");
+    return value;
   }
 
-  let parsed;
+  let primaryURL, secondaryURL;
   try {
-    parsed = new URL(url);
-  } catch {
-    alert("URLが正しくありません");
-    return;
-  }
-
-  if (parsed.protocol !== "https:") {
-    alert("DoHはHTTPS URLを指定してください");
+    primaryURL = validateURL(primary, "プライマリ DoH URL");
+    secondaryURL = validateURL(secondary, "セカンダリ DoH URL");
+  } catch (err) {
+    alert(err instanceof Error ? err.message : "URLを確認してください");
     return;
   }
 
   const profileUUID = uuid();
-  const payloadUUID = uuid();
-
-  const safeURL = escapeXML(url);
+  const primaryUUID = uuid();
+  const secondaryUUID = uuid();
   const safeName = escapeXML(name);
 
-  const profile = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
- "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>PayloadContent</key>
-  <array>
-    <dict>
-      <key>DNSSettings</key>
-      <dict>
-        <key>DNSProtocol</key>
-        <string>HTTPS</string>
-        <key>ServerURL</key>
-        <string>${safeURL}</string>
-      </dict>
-      <key>PayloadDescription</key>
-      <string>DNS over HTTPS</string>
-      <key>PayloadDisplayName</key>
-      <string>${safeName}</string>
-      <key>PayloadIdentifier</key>
-      <string>com.custom.doh.${payloadUUID}</string>
-      <key>PayloadType</key>
-      <string>com.apple.dnsSettings.managed</string>
-      <key>PayloadUUID</key>
-      <string>${payloadUUID}</string>
-      <key>PayloadVersion</key>
-      <integer>1</integer>
-    </dict>
-  </array>
-  <key>PayloadDescription</key>
-  <string>DNS over HTTPS configuration</string>
-  <key>PayloadDisplayName</key>
-  <string>${safeName}</string>
-  <key>PayloadIdentifier</key>
-  <string>com.custom.doh.profile.${profileUUID}</string>
-  <key>PayloadOrganization</key>
-  <string>Custom DoH</string>
-  <key>PayloadRemovalDisallowed</key>
-  <false/>
-  <key>PayloadType</key>
-  <string>Configuration</string>
-  <key>PayloadUUID</key>
-  <string>${profileUUID}</string>
-  <key>PayloadVersion</key>
-  <integer>1</integer>
-</dict>
-</plist>`;
+  function payload(url, displayName, identifier, payloadUUID) {
+    return [
+      "    <dict>",
+      "      <key>DNSSettings</key>",
+      "      <dict>",
+      "        <key>DNSProtocol</key>",
+      "        <string>HTTPS</string>",
+      "        <key>ServerURL</key>",
+      "        <string>" + escapeXML(url) + "</string>",
+      "      </dict>",
+      "      <key>PayloadDescription</key>",
+      "      <string>DNS over HTTPS</string>",
+      "      <key>PayloadDisplayName</key>",
+      "      <string>" + escapeXML(displayName) + "</string>",
+      "      <key>PayloadIdentifier</key>",
+      "      <string>" + identifier + "</string>",
+      "      <key>PayloadType</key>",
+      "      <string>com.apple.dnsSettings.managed</string>",
+      "      <key>PayloadUUID</key>",
+      "      <string>" + payloadUUID + "</string>",
+      "      <key>PayloadVersion</key>",
+      "      <integer>1</integer>",
+      "    </dict>"
+    ].join("\n");
+  }
 
-  const blob = new Blob([profile], {
-    type: "application/x-apple-aspen-config"
-  });
+  const profile = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    "<plist version=\"1.0\">",
+    "<dict>",
+    "  <key>PayloadContent</key>",
+    "  <array>",
+    payload(primaryURL, name + " - Primary", "com.custom.doh.primary." + primaryUUID, primaryUUID),
+    payload(secondaryURL, name + " - Secondary", "com.custom.doh.secondary." + secondaryUUID, secondaryUUID),
+    "  </array>",
+    "  <key>PayloadDescription</key>",
+    "  <string>DNS over HTTPS configuration</string>",
+    "  <key>PayloadDisplayName</key>",
+    "  <string>" + safeName + "</string>",
+    "  <key>PayloadIdentifier</key>",
+    "  <string>com.custom.doh.profile." + profileUUID + "</string>",
+    "  <key>PayloadOrganization</key>",
+    "  <string>Custom DoH</string>",
+    "  <key>PayloadRemovalDisallowed</key>",
+    "  <false/>",
+    "  <key>PayloadType</key>",
+    "  <string>Configuration</string>",
+    "  <key>PayloadUUID</key>",
+    "  <string>" + profileUUID + "</string>",
+    "  <key>PayloadVersion</key>",
+    "  <integer>1</integer>",
+    "</dict>",
+    "</plist>"
+  ].join("\n");
 
+  const blob = new Blob([profile], { type: "application/x-apple-aspen-config" });
   const downloadURL = URL.createObjectURL(blob);
-
-  // Open the generated profile in a new tab and request it as a download.
   const a = document.createElement("a");
   a.href = downloadURL;
   a.download = "custom-doh.mobileconfig";
-  a.target = "_blank";
-  a.rel = "noopener";
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
   a.remove();
-
   setTimeout(() => URL.revokeObjectURL(downloadURL), 60000);
-  document.getElementById("status").textContent =
-    "構成プロファイルを生成しました。";
+  document.getElementById("status").textContent = "プライマリ／セカンダリの構成プロファイルを生成しました。";
 });
 </script>
 </body>
