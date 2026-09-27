@@ -37,18 +37,25 @@ export async function isBlockedDomain(
 }
 
 export async function listBlockedDomains(kv: KVNamespace): Promise<string[]> {
-  const domains: string[] = []
+  const domains = new Set<string>()
+
+  for (const blocked of BLOCKED_DOMAINS) {
+    const domain = normalizeDomain(blocked)
+    if (domain) domains.add(domain)
+  }
+
   let cursor: string | undefined
 
   do {
     const page = await kv.list({ prefix: BLOCKLIST_PREFIX, cursor })
     for (const key of page.keys) {
-      domains.push(key.name.slice(BLOCKLIST_PREFIX.length))
+      const domain = normalizeDomain(key.name.slice(BLOCKLIST_PREFIX.length))
+      if (domain) domains.add(domain)
     }
     cursor = page.list_complete ? undefined : page.cursor
   } while (cursor)
 
-  return domains.sort()
+  return [...domains].sort()
 }
 
 export function normalizeBlockedDomain(domain: string): string {
