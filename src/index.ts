@@ -150,9 +150,9 @@ async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   try {
     const raw = match[1]
       .replace(/<code[^>]*>/gi, '')
-      .replace(/<\\/code>/gi, '')
+      .replace(/<\/code>/gi, '')
       .trim()
-      .replace(/^\`|\`$/g, '')
+      .replace(/^`|`$/g, '')
       .trim()
     const data = JSON.parse(decodeHtml(raw)) as AlfisData
     if (!data.zone || !Array.isArray(data.records)) return null
