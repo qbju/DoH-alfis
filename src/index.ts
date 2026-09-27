@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import * as dns from '@dnsquery/dns-packet'
+import { isBlockedDomain } from './blocklist'
 
 type Bindings = {
   ALFIS_KV?: KVNamespace
@@ -67,6 +68,14 @@ async function resolveDoH(env: Bindings, packet: Uint8Array): Promise<Response> 
   const qtype = question.type
   const tld = qname.split('.').at(-1) ?? ''
   console.log('[DoH] query', { qname, qtype, tld, isAlfis: ALFIS_ZONES.has(tld) })
+
+  // Apply the blocklist before either Alfis or upstream resolution.
+  // This makes the policy consistent for both Alfis and normal DNS names.
+  if (isBlockedDomain(qname)) {
+    console.log('[DoH] blocked', { qname, qtype })
+    return dnsResponse(makeErrorResponse(query, 3))
+  }
+
   if (ALFIS_ZONES.has(tld)) return resolveAlfisQuery(env, query, qname, qtype)
   return resolveNormalQuery(packet)
 }
@@ -159,15 +168,15 @@ async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   if (!response.ok) return null
 
   const html = await response.text()
-  const match = html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)
+  const match = html.match(/<pre[^>]*>([\\s\\S]*?)<\\/pre>/i)
   if (!match) return null
 
   try {
     const raw = match[1]
       .replace(/<code[^>]*>/gi, '')
-      .replace(/<\/code>/gi, '')
+      .replace(/<\\/code>/gi, '')
       .trim()
-      .replace(/^`|`$/g, '')
+      .replace(/^\`|\`$/g, '')
       .trim()
     const data = JSON.parse(decodeHtml(raw)) as AlfisData
     console.log('[Viewer] parsed', { zone: data.zone, recordCount: data.records?.length, records: data.records })
