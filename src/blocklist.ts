@@ -6,10 +6,10 @@ export const BLOCKED_DOMAINS = new Set<string>([
 ])
 
 export function isBlockedDomain(qname: string): boolean {
-  const name = qname.replace(/\\.$/, '').toLowerCase()
+  const name = qname.replace(/\.$/, '').toLowerCase()
 
   for (const blocked of BLOCKED_DOMAINS) {
-    const domain = blocked.replace(/\\.$/, '').toLowerCase()
+    const domain = blocked.replace(/\.$/, '').toLowerCase()
     if (name === domain || name.endsWith('.' + domain)) return true
   }
 
