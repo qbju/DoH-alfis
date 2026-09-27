@@ -1,9 +1,10 @@
 import { Hono } from 'hono'
 import * as dns from '@dnsquery/dns-packet'
-import { isBlockedDomain } from './blocklist'
+import { isBlockedDomain, listBlockedDomains, normalizeBlockedDomain, BLOCKLIST_PREFIX } from './blocklist'
 
 type Bindings = {
   ALFIS_KV?: KVNamespace
+  ADMIN_TOKEN?: string
 }
 
 type AlfisRecord = {
@@ -33,6 +34,44 @@ const DNS1111 = 'https://cloudflare-dns.com/dns-query'
 const ALFIS_ZONES = new Set(['anon','btn','conf','index','merch','mirror','mob','screen','srv','ygg'])
 
 app.get('/', (c) => c.text('DoH Alfis PoC'))
+
+app.get('/admin', (c) => c.html(ADMIN_HTML))
+
+app.get('/api/blocklist', async (c) => {
+  if (!isAdminAuthorized(c.req.header('authorization'), c.env.ADMIN_TOKEN)) {
+    return c.json({ error: 'unauthorized' }, 401)
+  }
+  if (!c.env.ALFIS_KV) return c.json({ error: 'ALFIS_KV is not configured' }, 503)
+  return c.json({ domains: await listBlockedDomains(c.env.ALFIS_KV) })
+})
+
+app.post('/api/blocklist', async (c) => {
+  if (!isAdminAuthorized(c.req.header('authorization'), c.env.ADMIN_TOKEN)) {
+    return c.json({ error: 'unauthorized' }, 401)
+  }
+  if (!c.env.ALFIS_KV) return c.json({ error: 'ALFIS_KV is not configured' }, 503)
+
+  const body = await c.req.json<{ domain?: string }>().catch(() => null)
+  const domain = body?.domain ? normalizeBlockedDomain(body.domain) : ''
+  if (!isValidDomain(domain)) return c.json({ error: 'invalid domain' }, 400)
+
+  await c.env.ALFIS_KV.put(BLOCKLIST_PREFIX + domain, '1')
+  return c.json({ ok: true, domain })
+})
+
+app.delete('/api/blocklist', async (c) => {
+  if (!isAdminAuthorized(c.req.header('authorization'), c.env.ADMIN_TOKEN)) {
+    return c.json({ error: 'unauthorized' }, 401)
+  }
+  if (!c.env.ALFIS_KV) return c.json({ error: 'ALFIS_KV is not configured' }, 503)
+
+  const body = await c.req.json<{ domain?: string }>().catch(() => null)
+  const domain = body?.domain ? normalizeBlockedDomain(body.domain) : ''
+  if (!isValidDomain(domain)) return c.json({ error: 'invalid domain' }, 400)
+
+  await c.env.ALFIS_KV.delete(BLOCKLIST_PREFIX + domain)
+  return c.json({ ok: true, domain })
+})
 
 app.get('/dns-query', async (c) => {
   const encoded = c.req.query('dns')
@@ -71,7 +110,7 @@ async function resolveDoH(env: Bindings, packet: Uint8Array): Promise<Response> 
 
   // Apply the blocklist before either Alfis or upstream resolution.
   // This makes the policy consistent for both Alfis and normal DNS names.
-  if (isBlockedDomain(qname)) {
+  if (await isBlockedDomain(qname, env.ALFIS_KV)) {
     console.log('[DoH] blocked', { qname, qtype })
     return dnsResponse(makeErrorResponse(query, 3))
   }
@@ -404,5 +443,83 @@ function decodeHtml(value: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&#39;|&apos;/g, "'")
 }
+
+function isAdminAuthorized(header: string | undefined, token: string | undefined): boolean {
+  if (!token || !header) return false
+  return header === `Bearer ${token}`
+}
+
+function isValidDomain(domain: string): boolean {
+  if (!domain || domain.length > 253 || domain.includes('..')) return false
+  const labels = domain.split('.')
+  return labels.length >= 2 && labels.every((label) =>
+    label.length >= 1 &&
+    label.length <= 63 &&
+    /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
+  )
+}
+
+const ADMIN_HTML = `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DoH Alfis - Blocklist</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 16px}
+input,button{font:inherit;padding:10px} input{width:70%} button{cursor:pointer}
+li{display:flex;justify-content:space-between;gap:12px;margin:8px 0}
+#login{margin-bottom:24px}.muted{color:#666}
+</style>
+</head>
+<body>
+<h1>Blocklist</h1>
+<p class="muted">ドメインを追加すると、その配下のサブドメインもNXDOMAINになります。</p>
+<div id="login">
+<input id="token" type="password" placeholder="ADMIN_TOKEN">
+<button onclick="load()">接続</button>
+</div>
+<form id="add" style="display:none" onsubmit="add(event)">
+<input id="domain" placeholder="example.com" autocomplete="off">
+<button>ブロック</button>
+</form>
+<ul id="list"></ul>
+<script>
+let token='';
+async function api(path, options={}){
+  options.headers=Object.assign({'Authorization':'Bearer '+token,'Content-Type':'application/json'},options.headers||{});
+  const r=await fetch(path,options);
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function load(){
+  token=document.getElementById('token').value;
+  try{
+    await refresh();
+    document.getElementById('add').style.display='block';
+  }catch(e){alert('認証失敗 / '+e.message)}
+}
+async function refresh(){
+  const data=await api('/api/blocklist');
+  document.getElementById('list').innerHTML=data.domains.map(d =>
+    '<li><code>'+escapeHtml(d)+'</code><button onclick="removeDomain(\\''+escapeJs(d)+'\\')">削除</button></li>'
+  ).join('');
+}
+async function add(e){
+  e.preventDefault();
+  const domain=document.getElementById('domain').value.trim();
+  try{await api('/api/blocklist',{method:'POST',body:JSON.stringify({domain})});document.getElementById('domain').value='';await refresh()}
+  catch(e){alert(e.message)}
+}
+async function removeDomain(domain){
+  if(!confirm(domain+' をブロック解除？')) return;
+  try{await api('/api/blocklist',{method:'DELETE',body:JSON.stringify({domain})});await refresh()}
+  catch(e){alert(e.message)}
+}
+function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function escapeJs(s){return s.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,"\\\\'")}
+</script>
+</body>
+</html>`
 
 export default app
