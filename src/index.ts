@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import * as dns from '@dnsquery/dns-packet'
 
 type Bindings = {
-  ALFIS_KV: KVNamespace
+  ALFIS_KV?: KVNamespace
 }
 
 type AlfisRecord = {
@@ -73,8 +73,8 @@ async function resolveDoH(env: Bindings, packet: Uint8Array): Promise<Response> 
 async function resolveAlfisQuery(env: Bindings, query: any, qname: string, qtype: string): Promise<Response> {
   console.log('[Alfis] start', { qname, qtype })
   const cacheKey = 'alfis:v1:' + qname + ':' + qtype
-  const cached = await env.ALFIS_KV.get(cacheKey, 'arrayBuffer')
-  console.log('[Alfis] KV', cached ? 'HIT' : 'MISS', cacheKey)
+  const cached = env.ALFIS_KV ? await env.ALFIS_KV.get(cacheKey, 'arrayBuffer') : null
+  console.log('[Alfis] KV', env.ALFIS_KV ? (cached ? 'HIT' : 'MISS') : 'UNBOUND', cacheKey)
   if (cached) return dnsResponse(new Uint8Array(cached))
   try {
     const alfis = await resolveFromAlfis(qname, qtype)
@@ -82,7 +82,11 @@ async function resolveAlfisQuery(env: Bindings, query: any, qname: string, qtype
     if (!alfis) return dnsResponse(makeErrorResponse(query, 3))
     const response = makeAlfisResponse(query, qname, qtype, alfis)
     const encoded = dns.encode(response)
-    await env.ALFIS_KV.put(cacheKey, encoded.buffer as ArrayBuffer, { expirationTtl: Math.max(30, minTtl(alfis.records)) })
+    if (env.ALFIS_KV) {
+      await env.ALFIS_KV.put(cacheKey, encoded.buffer as ArrayBuffer, {
+        expirationTtl: Math.max(30, minTtl(alfis.records)),
+      })
+    }
     return dnsResponse(encoded)
   } catch (err) {
     console.error('Alfis lookup failed:', err)
