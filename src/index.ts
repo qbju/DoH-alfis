@@ -47,8 +47,8 @@ app.get('/api/blocklist', async (c) => {
   return c.json({
     domains: domains.map((domain) => ({
       domain,
-      editable: !BLOCKED_DOMAINS.has(domain),
-      source: BLOCKED_DOMAINS.has(domain) ? 'config' : 'kv',
+      editable: !isConfiguredDomain(domain),
+      source: isConfiguredDomain(domain) ? 'config' : 'kv',
     })),
   })
 })
@@ -80,7 +80,7 @@ app.put('/api/blocklist', async (c) => {
   if (!isValidDomain(from) || !isValidDomain(domain)) {
     return c.json({ error: 'invalid domain' }, 400)
   }
-  if (BLOCKED_DOMAINS.has(from)) {
+  if (isConfiguredDomain(from)) {
     return c.json({ error: 'config domain cannot be edited' }, 400)
   }
   if (from === domain) return c.json({ ok: true, domain })
@@ -99,7 +99,7 @@ app.delete('/api/blocklist', async (c) => {
   const body = await c.req.json<{ domain?: string }>().catch(() => null)
   const domain = body?.domain ? normalizeBlockedDomain(body.domain) : ''
   if (!isValidDomain(domain)) return c.json({ error: 'invalid domain' }, 400)
-  if (BLOCKED_DOMAINS.has(domain)) {
+  if (isConfiguredDomain(domain)) {
     return c.json({ error: 'config domain cannot be deleted' }, 400)
   }
 
@@ -466,7 +466,7 @@ function isAdminAuthorized(header: string | undefined, token: string | undefined
   return header === `Bearer ${token}`
 }
 
-function isValidDomain(domain: string): boolean {
+function isConfiguredDomain(domain: string): boolean {\n  for (const blocked of BLOCKED_DOMAINS) {\n    if (normalizeBlockedDomain(blocked) === domain) return true\n  }\n  return false\n}\n\nfunction isValidDomain(domain: string): boolean {
   if (!domain || domain.length > 253 || domain.includes('..')) return false
   const labels = domain.split('.')
   return labels.length >= 2 && labels.every((label) =>
