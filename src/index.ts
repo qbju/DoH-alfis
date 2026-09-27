@@ -68,39 +68,34 @@ async function resolveDoH(env: Bindings, packet: Uint8Array): Promise<Response> 
   const qtype = question.type
   const cacheKey = `v1:${qname}:${qtype}`
 
-  // KV is only for Alfis-derived answers. 1.1.1.1 is never cached.
+  // Alfis is the default resolver. KV only caches Alfis-derived answers.
   const cached = await env.ALFIS_KV.get(cacheKey, 'arrayBuffer')
   if (cached) return dnsResponse(new Uint8Array(cached))
 
-  // Ordinary DNS first.
-  const normal = await queryCloudflare(packet)
-  if (normal.ok) {
-    const normalBytes = new Uint8Array(await normal.clone().arrayBuffer())
-    const decoded = dns.decode(normalBytes)
+  const alfis = await resolveFromAlfis(qname, qtype)
+  if (alfis) {
+    const response = makeAlfisResponse(query, qname, qtype, alfis)
+    const encoded = dns.encode(response)
 
-    // Only a successful answer bypasses Alfis. NXDOMAIN and NODATA continue to Alfis.
-    if (decoded.rcode === 0 && (decoded.answers?.length ?? 0) > 0) {
+    await env.ALFIS_KV.put(cacheKey, encoded.buffer as ArrayBuffer, {
+      expirationTtl: Math.max(30, minTtl(alfis.records)),
+    })
+
+    return dnsResponse(encoded)
+  }
+
+  // Ordinary DNS is only the fallback when Alfis has no answer.
+  try {
+    const normal = await queryCloudflare(packet)
+    if (normal.ok) {
+      const normalBytes = new Uint8Array(await normal.arrayBuffer())
       return dnsResponse(normalBytes)
     }
+  } catch (err) {
+    console.error('Cloudflare DoH fallback failed:', err)
   }
 
-  // If this is a subdomain, search its parents only. The subdomain itself is
-  // never expected to be a solved Alfis entry.
-  const alfis = await resolveFromAlfis(qname, qtype)
-  if (!alfis) {
-    if (normal.ok) return dnsResponse(new Uint8Array(await normal.arrayBuffer()))
-    return dnsResponse(makeErrorResponse(query, 3))
-  }
-
-  const response = makeAlfisResponse(query, qname, qtype, alfis)
-  const encoded = dns.encode(response)
-
-  // Cache only the Alfis result.
-  await env.ALFIS_KV.put(cacheKey, encoded.buffer as ArrayBuffer, {
-    expirationTtl: Math.max(30, minTtl(alfis.records)),
-  })
-
-  return dnsResponse(encoded)
+  return dnsResponse(makeErrorResponse(query, 3))
 }
 
 async function queryCloudflare(packet: Uint8Array): Promise<Response> {
@@ -130,7 +125,6 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
       return data
     }
 
-    // Exact Alfis domain exists, but requested type is absent.
     if (candidate === qname) return data
   }
 
@@ -139,19 +133,19 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
 
 async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   const zone = domain.split('.').at(-1)!
-  // Alfis hashes the raw domain string: SHA256(SHA256(domain)).
-  // Angle brackets shown in documentation are placeholders, not literal bytes.
   const hash = await doubleSha256Hex(domain)
 
-  // The Viewer lookup uses the resulting hexadecimal hash plus the zone.
-  const response = await fetch(`${VIEWER}${hash}.${zone}`, {
+  // Alfis Viewer lookup uses literal angle brackets around the hash:
+  // <HASH>.ygg
+  const lookup = `<${hash}>.${zone}`
+  const response = await fetch(`${VIEWER}${encodeURIComponent(lookup)}`, {
     headers: { accept: 'text/html' },
   })
 
   if (!response.ok) return null
 
   const html = await response.text()
-  const match = html.match(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/i)
+  const match = html.match(/<pre[^>]*>\\s*<code[^>]*>([\\s\\S]*?)<\\/code>\\s*<\\/pre>/i)
   if (!match) return null
 
   try {
