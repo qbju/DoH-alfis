@@ -19,6 +19,15 @@ Normal 1.1.1.1 responses are **never written to KV**.
 
 ## Cloudflare setup
 
+This project intentionally does not define a KV namespace in `wrangler.jsonc`.
+
+The Worker expects a KV binding named `ALFIS_KV`. The actual KV namespace is chosen by the deployer, so each user can attach their own namespace from the Cloudflare dashboard or add their own Wrangler KV binding configuration.
+
+The application never uses a normal environment variable for the KV namespace ID because Cloudflare Workers KV is exposed through bindings.
+
+Normal 1.1.1.1 responses are **never written to KV**.
+
+
 Create/bind a KV namespace named `ALFIS_KV` and deploy with Wrangler.
 
 The current `wrangler.jsonc` leaves the namespace ID empty so Wrangler can provision it during deployment according to the current Workers configuration flow.
