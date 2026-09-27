@@ -1,3 +1,5 @@
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fqbju%2FDoH-alfis)
+
 # DoH-alfis
 
 Hono + Cloudflare Workers PoC for DNS-over-HTTPS with Alfis fallback.
