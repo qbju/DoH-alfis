@@ -125,7 +125,6 @@ async function resolveFromAlfis(qname: string, qtype: string): Promise<AlfisData
       return data
     }
 
-    if (candidate === qname) return data
   }
 
   return null
@@ -145,7 +144,7 @@ async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   if (!response.ok) return null
 
   const html = await response.text()
-  const match = html.match(/<pre[^>]*>\\s*<code[^>]*>([\\s\\S]*?)<\\/code>\\s*<\\/pre>/i)
+  const match = html.match(/<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/i)
   if (!match) return null
 
   try {
