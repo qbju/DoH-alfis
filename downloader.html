@@ -137,11 +137,12 @@ document.getElementById("generate").addEventListener("click", () => {
 
   const downloadURL = URL.createObjectURL(blob);
 
-  // Use a normal download link instead of opening the blob URL.
-  // This keeps the generated profile as a .mobileconfig file.
+  // Open the generated profile in a new tab and request it as a download.
   const a = document.createElement("a");
   a.href = downloadURL;
   a.download = "custom-doh.mobileconfig";
+  a.target = "_blank";
+  a.rel = "noopener";
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
