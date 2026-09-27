@@ -136,14 +136,23 @@ document.getElementById("generate").addEventListener("click", () => {
   });
 
   const downloadURL = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = downloadURL;
-  a.download = "custom-doh.mobileconfig";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
 
-  setTimeout(() => URL.revokeObjectURL(downloadURL), 1000);
+  // Open the generated .mobileconfig in a new tab.
+  // This lets iOS handle the profile directly instead of forcing
+  // the browser to treat it only as a downloaded text file.
+  const newTab = window.open(downloadURL, "_blank");
+
+  if (!newTab) {
+    // Fallback when the browser blocks popups.
+    const a = document.createElement("a");
+    a.href = downloadURL;
+    a.download = "custom-doh.mobileconfig";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  setTimeout(() => URL.revokeObjectURL(downloadURL), 60000);
   document.getElementById("status").textContent =
     "構成プロファイルを生成しました。";
 });
