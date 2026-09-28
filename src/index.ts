@@ -321,10 +321,21 @@ function selectRecords(
       (allowCnameForAddressQuery &&
         (qtype === 'A' || qtype === 'AAAA') &&
         record.type === 'CNAME')
+
+    // Alfis may represent the apex owner as "@", a relative name,
+    // or the full domain name. Normalize all three forms before matching.
+    let ownerRelative: string
+    if (owner === '@' || owner === ownerDomain) {
+      ownerRelative = '@'
+    } else if (owner.endsWith('.' + ownerDomain)) {
+      ownerRelative = owner.slice(0, -(ownerDomain.length + 1))
+    } else {
+      ownerRelative = owner
+    }
+
     const ownerMatches =
-      owner === '@'
-        ? qname === ownerDomain
-        : owner === relative || (owner === '*' && relative !== '@')
+      ownerRelative === relative ||
+      (ownerRelative === '*' && relative !== '@')
     return ownerMatches && typeMatches
   })
 }
