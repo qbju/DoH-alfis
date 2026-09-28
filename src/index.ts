@@ -266,9 +266,9 @@ function parseAlfisData(body: string, contentType: string): AlfisData | null {
   }
 
   const htmlMatches = [
-    body.match(/<pre[^>]*>([\\s\\S]*?)<\\/pre>/i)?.[1],
-    body.match(/<textarea[^>]*>([\\s\\S]*?)<\\/textarea>/i)?.[1],
-    body.match(/<script[^>]*type=["']application\\/json["'][^>]*>([\\s\\S]*?)<\\/script>/i)?.[1],
+    body.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)?.[1],
+    body.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/i)?.[1],
+    body.match(/<script[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/i)?.[1],
   ]
 
   for (const match of htmlMatches) {
@@ -281,7 +281,7 @@ function parseAlfisData(body: string, contentType: string): AlfisData | null {
     try {
       const raw = decodeHtml(candidate)
         .replace(/<code[^>]*>/gi, '')
-        .replace(/<\\/code>/gi, '')
+        .replace(/<\/code>/gi, '')
         .trim()
         .replace(/^\`|\`$/g, '')
         .trim()
@@ -518,7 +518,8 @@ function isConfiguredDomain(domain: string): boolean {
   }
   return false
 }
-\nfunction isValidDomain(domain: string): boolean {
+
+function isValidDomain(domain: string): boolean {
   if (!domain || domain.length > 253 || domain.includes('..')) return false
   const labels = domain.split('.')
   return labels.length >= 2 && labels.every((label) =>
