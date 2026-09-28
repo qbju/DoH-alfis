@@ -227,31 +227,74 @@ async function fetchAlfis(domain: string): Promise<AlfisData | null> {
   const lookup = `<${hash}>.${zone}`
   const url = `${VIEWER}${encodeURIComponent(lookup)}`
   console.log('[Viewer] request', { domain, zone, hash, url })
-  const response = await fetch(`${VIEWER}${encodeURIComponent(lookup)}`, {
-    headers: { accept: 'text/html' },
-  })
-
-  console.log('[Viewer] HTTP', response.status)
-  if (!response.ok) return null
-
-  const html = await response.text()
-  const match = html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i)
-  if (!match) return null
 
   try {
-    const raw = match[1]
-      .replace(/<code[^>]*>/gi, '')
-      .replace(/<\/code>/gi, '')
-      .trim()
-      .replace(/^\`|\`$/g, '')
-      .trim()
-    const data = JSON.parse(decodeHtml(raw)) as AlfisData
-    console.log('[Viewer] parsed', { zone: data.zone, recordCount: data.records?.length, records: data.records })
-    if (!data.zone || !Array.isArray(data.records)) return null
+    const response = await fetch(url, {
+      headers: {
+        accept: 'application/json, text/html;q=0.9, */*;q=0.8',
+      },
+      signal: AbortSignal.timeout(8000),
+    })
+
+    console.log('[Viewer] HTTP', response.status, response.headers.get('content-type'))
+    if (!response.ok) return null
+
+    const body = await response.text()
+    const data = parseAlfisData(body, response.headers.get('content-type') ?? '')
+    if (!data) {
+      console.error('[Viewer] could not parse Alfis data')
+      return null
+    }
+
+    console.log('[Viewer] parsed', {
+      zone: data.zone,
+      recordCount: data.records?.length,
+      records: data.records,
+    })
     return data
-  } catch {
+  } catch (err) {
+    console.error('[Viewer] request failed', err)
     return null
   }
+}
+
+function parseAlfisData(body: string, contentType: string): AlfisData | null {
+  const candidates: string[] = []
+
+  if (contentType.toLowerCase().includes('application/json')) {
+    candidates.push(body)
+  }
+
+  const htmlMatches = [
+    body.match(/<pre[^>]*>([\\s\\S]*?)<\\/pre>/i)?.[1],
+    body.match(/<textarea[^>]*>([\\s\\S]*?)<\\/textarea>/i)?.[1],
+    body.match(/<script[^>]*type=["']application\\/json["'][^>]*>([\\s\\S]*?)<\\/script>/i)?.[1],
+  ]
+
+  for (const match of htmlMatches) {
+    if (match) candidates.push(match)
+  }
+
+  candidates.push(body)
+
+  for (const candidate of candidates) {
+    try {
+      const raw = decodeHtml(candidate)
+        .replace(/<code[^>]*>/gi, '')
+        .replace(/<\\/code>/gi, '')
+        .trim()
+        .replace(/^\`|\`$/g, '')
+        .trim()
+      const data = JSON.parse(raw) as AlfisData
+      if (data && typeof data.zone === 'string' && Array.isArray(data.records)) {
+        return data
+      }
+    } catch {
+      // Try the next representation.
+    }
+  }
+
+  return null
 }
 
 function selectRecords(
@@ -278,7 +321,10 @@ function selectRecords(
       (allowCnameForAddressQuery &&
         (qtype === 'A' || qtype === 'AAAA') &&
         record.type === 'CNAME')
-    const ownerMatches = owner === '@' ? qname === ownerDomain : owner === relative
+    const ownerMatches =
+      owner === '@'
+        ? qname === ownerDomain
+        : owner === relative || (owner === '*' && relative !== '@')
     return ownerMatches && typeMatches
   })
 }
@@ -466,7 +512,13 @@ function isAdminAuthorized(header: string | undefined, token: string | undefined
   return header === `Bearer ${token}`
 }
 
-function isConfiguredDomain(domain: string): boolean {\n  for (const blocked of BLOCKED_DOMAINS) {\n    if (normalizeBlockedDomain(blocked) === domain) return true\n  }\n  return false\n}\n\nfunction isValidDomain(domain: string): boolean {
+function isConfiguredDomain(domain: string): boolean {
+  for (const blocked of BLOCKED_DOMAINS) {
+    if (normalizeBlockedDomain(blocked) === domain) return true
+  }
+  return false
+}
+\nfunction isValidDomain(domain: string): boolean {
   if (!domain || domain.length > 253 || domain.includes('..')) return false
   const labels = domain.split('.')
   return labels.length >= 2 && labels.every((label) =>
